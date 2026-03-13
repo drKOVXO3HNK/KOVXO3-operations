@@ -1,0 +1,3 @@
+<!doctype html><html><head><meta charset='utf-8'><title>Login</title>
+<style>body{font-family:Arial;background:#0c1118;color:#e6eef7;margin:40px}.card{max-width:360px;background:#141d29;border:1px solid #2b3d53;border-radius:10px;padding:16px}input,button{width:100%;margin:6px 0;padding:8px;border-radius:6px;border:1px solid #35506e;background:#101a25;color:#e6eef7}</style>
+</head><body><div class='card'><h3>Вход</h3>{% if error %}<div style='color:#ff9f9f'>{{error}}</div>{% endif %}<form method='post' action='/login'><input name='username' placeholder='username' required><input name='password' placeholder='password' type='password' required><button>Войти</button></form></div></body></html>

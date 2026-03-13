@@ -1,16 +1,35 @@
 from datetime import date
 from io import BytesIO
-from fastapi import FastAPI, Depends, Form, Request
+from fastapi import FastAPI, Depends, Form, Request, HTTPException, UploadFile, File
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from .db import init_db, get_session
-from .models import FieldItem, CropItem, OperationItem, UserItem
+from .models import FieldItem, CropItem, OperationItem, UserItem, AuditLogItem
 
 app = FastAPI(title="KOVXO3 Operations")
 templates = Jinja2Templates(directory="app/templates")
+
+
+def get_current_user(request: Request, session: Session) -> UserItem:
+    username = request.cookies.get("user")
+    if not username:
+        raise HTTPException(status_code=401)
+    user = session.exec(select(UserItem).where(UserItem.username == username)).first()
+    if not user:
+        raise HTTPException(status_code=401)
+    return user
+
+
+def can_edit(role: str) -> bool:
+    return role in {"manager", "agronom"}
+
+
+def audit(session: Session, username: str, action: str, payload: str = ""):
+    session.add(AuditLogItem(username=username, action=action, payload=payload[:4000]))
+    session.commit()
 
 
 @app.on_event("startup")
@@ -23,15 +42,39 @@ def root():
     return RedirectResponse(url="/dashboard")
 
 
-@app.get("/dashboard")
-def dashboard(request: Request, season: int | None = None, user: str = "oleg", session: Session = Depends(get_session)):
-    season = season or date.today().year
+@app.get("/login")
+def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
 
+
+@app.post("/login")
+def login(request: Request, username: str = Form(...), password: str = Form(...), session: Session = Depends(get_session)):
+    user = session.exec(select(UserItem).where(UserItem.username == username, UserItem.password == password)).first()
+    if not user:
+        return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин/пароль"})
+    resp = RedirectResponse(url="/dashboard", status_code=303)
+    resp.set_cookie("user", username, httponly=True)
+    return resp
+
+
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie("user")
+    return resp
+
+
+@app.get("/dashboard")
+def dashboard(request: Request, season: int | None = None, session: Session = Depends(get_session)):
+    try:
+        user = get_current_user(request, session)
+    except Exception:
+        return RedirectResponse(url="/login", status_code=303)
+
+    season = season or date.today().year
     fields = session.exec(select(FieldItem)).all()
     crops = session.exec(select(CropItem)).all()
     ops = session.exec(select(OperationItem).where(OperationItem.season == season)).all()
-    user_row = session.exec(select(UserItem).where(UserItem.username == user)).first()
-    role = user_row.role if user_row else "manager"
 
     by_crop: dict[str, float] = {}
     for op in ops:
@@ -52,14 +95,19 @@ def dashboard(request: Request, season: int | None = None, user: str = "oleg", s
             "ops": ops,
             "fields": {f.id: f for f in fields},
             "crops": {c.id: c for c in crops},
-            "user": user,
-            "role": role,
+            "user": user.username,
+            "role": user.role,
+            "can_edit": can_edit(user.role),
         },
     )
 
 
 @app.post("/seed")
-def seed_data(session: Session = Depends(get_session)):
+def seed_data(request: Request, session: Session = Depends(get_session)):
+    user = get_current_user(request, session)
+    if user.role != "manager":
+        raise HTTPException(status_code=403, detail="Только manager")
+
     if not session.exec(select(FieldItem)).first():
         session.add_all([
             FieldItem(name="Поле-1", group_name="Север", area_ha=210.5),
@@ -70,16 +118,18 @@ def seed_data(session: Session = Depends(get_session)):
         session.add_all([CropItem(name="Пшеница яровая"), CropItem(name="Горох"), CropItem(name="Рапс яровой")])
     if not session.exec(select(UserItem)).first():
         session.add_all([
-            UserItem(username="oleg", role="manager"),
-            UserItem(username="agronom1", role="agronom"),
-            UserItem(username="operator1", role="operator"),
+            UserItem(username="oleg", password="oleg123", role="manager"),
+            UserItem(username="agronom1", password="agro123", role="agronom"),
+            UserItem(username="operator1", password="op123", role="operator"),
         ])
     session.commit()
+    audit(session, user.username, "seed", "seed demo data")
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @app.post("/operations")
 def add_operation(
+    request: Request,
     season: int = Form(...),
     operation_type: str = Form(...),
     field_id: int = Form(...),
@@ -88,6 +138,10 @@ def add_operation(
     status: str = Form("planned"),
     session: Session = Depends(get_session),
 ):
+    user = get_current_user(request, session)
+    if not can_edit(user.role):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
     session.add(
         OperationItem(
             season=season,
@@ -101,11 +155,48 @@ def add_operation(
         )
     )
     session.commit()
+    audit(session, user.username, "add_operation", f"season={season},field={field_id},crop={crop_id},area={planned_area_ha}")
+    return RedirectResponse(url=f"/dashboard?season={season}", status_code=303)
+
+
+@app.post("/import/operations")
+def import_operations(request: Request, season: int = Form(...), file: UploadFile = File(...), session: Session = Depends(get_session)):
+    user = get_current_user(request, session)
+    if user.role != "manager":
+        raise HTTPException(status_code=403, detail="Только manager")
+
+    wb = load_workbook(filename=BytesIO(file.file.read()), data_only=True)
+    ws = wb.active
+
+    fields = {f.name: f.id for f in session.exec(select(FieldItem)).all()}
+    crops = {c.name: c.id for c in session.exec(select(CropItem)).all()}
+
+    created = 0
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or not row[0]:
+            continue
+        operation_type, field_name, crop_name, planned_area = row[0], row[1], row[2], row[3]
+        if field_name not in fields or crop_name not in crops:
+            continue
+        session.add(OperationItem(
+            season=season,
+            operation_type=str(operation_type),
+            field_id=fields[field_name],
+            crop_id=crops[crop_name],
+            planned_area_ha=float(planned_area or 0),
+            completed_area_ha=0,
+            status="planned",
+            planned_date=date.today(),
+        ))
+        created += 1
+    session.commit()
+    audit(session, user.username, "import_operations", f"season={season},created={created},file={file.filename}")
     return RedirectResponse(url=f"/dashboard?season={season}", status_code=303)
 
 
 @app.get("/fields/{field_id}")
 def field_card(field_id: int, request: Request, season: int | None = None, session: Session = Depends(get_session)):
+    user = get_current_user(request, session)
     season = season or date.today().year
     field = session.get(FieldItem, field_id)
     if not field:
@@ -118,11 +209,23 @@ def field_card(field_id: int, request: Request, season: int | None = None, sessi
         "field": field,
         "ops": ops,
         "crops": crops,
+        "user": user.username,
+        "role": user.role,
     })
 
 
+@app.get("/audit")
+def audit_page(request: Request, session: Session = Depends(get_session)):
+    user = get_current_user(request, session)
+    if user.role != "manager":
+        raise HTTPException(status_code=403, detail="Только manager")
+    logs = session.exec(select(AuditLogItem).order_by(AuditLogItem.id.desc())).all()
+    return templates.TemplateResponse("audit.html", {"request": request, "logs": logs, "user": user.username, "role": user.role})
+
+
 @app.get("/export/operations.xlsx")
-def export_operations(season: int, session: Session = Depends(get_session)):
+def export_operations(request: Request, season: int, session: Session = Depends(get_session)):
+    _ = get_current_user(request, session)
     fields = {f.id: f.name for f in session.exec(select(FieldItem)).all()}
     crops = {c.id: c.name for c in session.exec(select(CropItem)).all()}
     ops = session.exec(select(OperationItem).where(OperationItem.season == season)).all()
@@ -150,7 +253,8 @@ def export_operations(season: int, session: Session = Depends(get_session)):
 
 
 @app.get("/api/report/{season}")
-def report(season: int, session: Session = Depends(get_session)):
+def report(request: Request, season: int, session: Session = Depends(get_session)):
+    _ = get_current_user(request, session)
     ops = session.exec(select(OperationItem).where(OperationItem.season == season)).all()
     return {
         "season": season,

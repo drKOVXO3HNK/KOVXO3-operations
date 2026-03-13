@@ -18,7 +18,15 @@ class CropItem(SQLModel, table=True):
 class UserItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str
+    password: str = "123456"
     role: str = "agronom"  # agronom | manager | operator
+
+
+class AuditLogItem(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str
+    action: str
+    payload: Optional[str] = None
 
 
 class OperationItem(SQLModel, table=True):

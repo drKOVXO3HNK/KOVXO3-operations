@@ -13,16 +13,19 @@
 </head>
 <body>
   <h2>KOVXO3 Operations — сезон {{season}}</h2>
-  <div class="card"><b>Пользователь:</b> {{user}} | <b>Роль:</b> {{role}}</div>
+  <div class="card"><b>Пользователь:</b> {{user}} | <b>Роль:</b> {{role}} | <a href="/logout">Выйти</a> {% if role == 'manager' %}| <a href="/audit">Audit</a>{% endif %}</div>
 
   <div class="card">
     <b>Сводка:</b> Полей {{fields_count}} | Операций {{ops_count}} | План {{planned_sum}} га | Факт {{completed_sum}} га
     | <a href="/export/operations.xlsx?season={{season}}" style="color:#9cd1ff">Скачать Excel</a>
+    {% if role == 'manager' %}
     <form method="post" action="/seed" style="display:inline">
       <button>Seed demo data</button>
     </form>
+    {% endif %}
   </div>
 
+  {% if can_edit %}
   <div class="card">
     <h3>Добавить агрооперацию</h3>
     <form method="post" action="/operations">
@@ -43,6 +46,19 @@
       <button>Сохранить</button>
     </form>
   </div>
+  {% endif %}
+
+  {% if role == 'manager' %}
+  <div class="card">
+    <h3>Импорт операций из Excel</h3>
+    <div style="font-size:12px;opacity:.8">Колонки: operation_type | field_name | crop_name | planned_area</div>
+    <form method="post" action="/import/operations" enctype="multipart/form-data">
+      <input name="season" type="number" value="{{season}}" />
+      <input type="file" name="file" accept=".xlsx" required />
+      <button>Импортировать</button>
+    </form>
+  </div>
+  {% endif %}
 
   <div class="card">
     <h3>Площади по культурам</h3>
