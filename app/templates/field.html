@@ -1,40 +1,27 @@
 <!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <title>Поле {{field.name}}</title>
-  <style>
-    body{font-family:Arial;background:#0c1118;color:#e6eef7;margin:20px}
-    .card{background:#141d29;border:1px solid #2b3d53;border-radius:10px;padding:12px;margin-bottom:12px}
-    table{width:100%;border-collapse:collapse}
-    td,th{border-bottom:1px solid #223245;padding:6px;text-align:left}
-    a{color:#9cd1ff}
-  </style>
-</head>
+<html lang="ru"><head><meta charset="utf-8" /><title>Поле {{field.name}}</title>
+<style>
+:root{--bg:#0b1118;--panel:#121c28;--border:#284056;--text:#e6eef7}
+body{font-family:Inter,Segoe UI,Arial;background:radial-gradient(circle at 30% -20%, #1a2a3b, var(--bg));color:var(--text);margin:20px}
+.card{background:linear-gradient(180deg,#152233,#101923);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px}
+table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24384c;border-radius:12px;overflow:hidden}
+td,th{border-bottom:1px solid #223245;padding:8px;text-align:left}th{background:#162433}tr:last-child td{border-bottom:none}a{color:#9cd1ff}
+</style></head>
 <body>
   <div class="card">
     <a href="/dashboard?season={{season}}">← Назад</a>
     <h2>{{field.name}}</h2>
     <div>Группа: {{field.group_name}} | Площадь: {{field.area_ha}} га | Сезон: {{season}}</div>
   </div>
-
   <div class="card">
     <h3>Операции по полю</h3>
     <table>
       <thead><tr><th>ID</th><th>Тип</th><th>Культура</th><th>План</th><th>Факт</th><th>Статус</th></tr></thead>
       <tbody>
       {% for o in ops %}
-      <tr>
-        <td>{{o.id}}</td>
-        <td>{{o.operation_type}}</td>
-        <td>{{crops[o.crop_id].name if o.crop_id in crops else 'Не указана'}}</td>
-        <td>{{o.planned_area_ha}}</td>
-        <td>{{o.completed_area_ha}}</td>
-        <td>{{o.status}}</td>
-      </tr>
+      <tr><td>{{o.id}}</td><td>{{o.operation_type}}</td><td>{{crops[o.crop_id].name if o.crop_id in crops else 'Не указана'}}</td><td>{{o.planned_area_ha}}</td><td>{{o.completed_area_ha}}</td><td>{{o.status}}</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
-</body>
-</html>
+</body></html>

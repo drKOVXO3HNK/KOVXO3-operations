@@ -1,3 +1,8 @@
 <!doctype html><html><head><meta charset='utf-8'><title>Audit</title>
-<style>body{font-family:Arial;background:#0c1118;color:#e6eef7;margin:20px}.card{background:#141d29;border:1px solid #2b3d53;border-radius:10px;padding:12px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #223245;padding:6px;text-align:left}a{color:#9cd1ff}</style></head>
+<style>
+:root{--bg:#0b1118;--panel:#121c28;--border:#284056;--text:#e6eef7}
+body{font-family:Inter,Segoe UI,Arial;background:radial-gradient(circle at 30% -20%, #1a2a3b, var(--bg));color:var(--text);margin:20px}
+.card{background:linear-gradient(180deg,#152233,#101923);border:1px solid var(--border);border-radius:14px;padding:14px}
+table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24384c;border-radius:12px;overflow:hidden}td,th{border-bottom:1px solid #223245;padding:8px;text-align:left}th{background:#162433}tr:last-child td{border-bottom:none}a{color:#9cd1ff}
+</style></head>
 <body><div class='card'><a href='/dashboard'>← Dashboard</a><h3>Audit log</h3><table><thead><tr><th>ID</th><th>User</th><th>Action</th><th>Payload</th></tr></thead><tbody>{% for l in logs %}<tr><td>{{l.id}}</td><td>{{l.username}}</td><td>{{l.action}}</td><td>{{l.payload}}</td></tr>{% endfor %}</tbody></table></div></body></html>
