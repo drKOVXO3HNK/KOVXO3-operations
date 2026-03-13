@@ -15,6 +15,12 @@ class CropItem(SQLModel, table=True):
     name: str
 
 
+class UserItem(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str
+    role: str = "agronom"  # agronom | manager | operator
+
+
 class OperationItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     season: int

@@ -13,9 +13,11 @@
 </head>
 <body>
   <h2>KOVXO3 Operations — сезон {{season}}</h2>
+  <div class="card"><b>Пользователь:</b> {{user}} | <b>Роль:</b> {{role}}</div>
 
   <div class="card">
     <b>Сводка:</b> Полей {{fields_count}} | Операций {{ops_count}} | План {{planned_sum}} га | Факт {{completed_sum}} га
+    | <a href="/export/operations.xlsx?season={{season}}" style="color:#9cd1ff">Скачать Excel</a>
     <form method="post" action="/seed" style="display:inline">
       <button>Seed demo data</button>
     </form>
@@ -60,7 +62,7 @@
         <tr>
           <td>{{o.id}}</td>
           <td>{{o.operation_type}}</td>
-          <td>{{fields[o.field_id].name if o.field_id in fields else o.field_id}}</td>
+          <td><a style="color:#9cd1ff" href="/fields/{{o.field_id}}?season={{season}}">{{fields[o.field_id].name if o.field_id in fields else o.field_id}}</a></td>
           <td>{{crops[o.crop_id].name if o.crop_id in crops else 'Не указана'}}</td>
           <td>{{o.planned_area_ha}}</td>
           <td>{{o.completed_area_ha}}</td>
