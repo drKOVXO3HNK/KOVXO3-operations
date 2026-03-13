@@ -1,6 +1,7 @@
 from datetime import date
 from typing import Optional
 from sqlmodel import SQLModel, Field
+import secrets
 
 
 class FieldItem(SQLModel, table=True):
@@ -20,6 +21,7 @@ class UserItem(SQLModel, table=True):
     username: str
     password: str = "123456"
     role: str = "agronom"  # agronom | manager | operator
+    api_token: str = Field(default_factory=lambda: secrets.token_hex(16))
 
 
 class AuditLogItem(SQLModel, table=True):

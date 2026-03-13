@@ -1,6 +1,6 @@
 from datetime import date
 from io import BytesIO
-from fastapi import FastAPI, Depends, Form, Request, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, Form, Request, HTTPException, UploadFile, File, Header
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
@@ -25,6 +25,12 @@ def get_current_user(request: Request, session: Session) -> UserItem:
 
 def can_edit(role: str) -> bool:
     return role in {"manager", "agronom"}
+
+
+def get_user_by_token(session: Session, token: str | None):
+    if not token:
+        return None
+    return session.exec(select(UserItem).where(UserItem.api_token == token)).first()
 
 
 def audit(session: Session, username: str, action: str, payload: str = ""):
@@ -159,6 +165,70 @@ def add_operation(
     return RedirectResponse(url=f"/dashboard?season={season}", status_code=303)
 
 
+@app.post("/operations/{op_id}/update")
+def update_operation(
+    op_id: int,
+    request: Request,
+    season: int = Form(...),
+    operation_type: str = Form(...),
+    planned_area_ha: float = Form(...),
+    status: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    user = get_current_user(request, session)
+    if not can_edit(user.role):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    op = session.get(OperationItem, op_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    op.season = season
+    op.operation_type = operation_type
+    op.planned_area_ha = planned_area_ha
+    op.status = status
+    session.add(op)
+    session.commit()
+    audit(session, user.username, "update_operation", f"id={op_id},status={status}")
+    return RedirectResponse(url=f"/dashboard?season={season}", status_code=303)
+
+
+@app.post("/operations/{op_id}/close")
+def close_operation(
+    op_id: int,
+    request: Request,
+    completed_area_ha: float = Form(...),
+    completed_date: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    user = get_current_user(request, session)
+    if not can_edit(user.role):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    op = session.get(OperationItem, op_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    op.completed_area_ha = completed_area_ha
+    op.completed_date = date.fromisoformat(completed_date)
+    op.status = "done"
+    session.add(op)
+    session.commit()
+    audit(session, user.username, "close_operation", f"id={op_id},completed={completed_area_ha}")
+    return RedirectResponse(url=f"/dashboard?season={op.season}", status_code=303)
+
+
+@app.post("/operations/{op_id}/delete")
+def delete_operation(op_id: int, request: Request, session: Session = Depends(get_session)):
+    user = get_current_user(request, session)
+    if user.role != "manager":
+        raise HTTPException(status_code=403, detail="Только manager")
+    op = session.get(OperationItem, op_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    season = op.season
+    session.delete(op)
+    session.commit()
+    audit(session, user.username, "delete_operation", f"id={op_id}")
+    return RedirectResponse(url=f"/dashboard?season={season}", status_code=303)
+
+
 @app.post("/import/operations")
 def import_operations(request: Request, season: int = Form(...), file: UploadFile = File(...), session: Session = Depends(get_session)):
     user = get_current_user(request, session)
@@ -250,6 +320,56 @@ def export_operations(request: Request, season: int, session: Session = Depends(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=operations_{season}.xlsx"},
     )
+
+
+@app.get("/api/token/me")
+def api_token_me(request: Request, session: Session = Depends(get_session)):
+    user = get_current_user(request, session)
+    return {"username": user.username, "role": user.role, "api_token": user.api_token}
+
+
+@app.post("/api/token/rotate")
+def api_token_rotate(request: Request, session: Session = Depends(get_session)):
+    import secrets
+    user = get_current_user(request, session)
+    user.api_token = secrets.token_hex(16)
+    session.add(user)
+    session.commit()
+    audit(session, user.username, "rotate_token", "")
+    return {"api_token": user.api_token}
+
+
+@app.post("/api/operations")
+def api_add_operation(
+    season: int,
+    operation_type: str,
+    field_id: int,
+    crop_id: int,
+    planned_area_ha: float,
+    x_api_token: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+):
+    user = get_user_by_token(session, x_api_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid API token")
+    if not can_edit(user.role):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    op = OperationItem(
+        season=season,
+        operation_type=operation_type,
+        field_id=field_id,
+        crop_id=crop_id,
+        planned_area_ha=planned_area_ha,
+        completed_area_ha=0,
+        status="planned",
+        planned_date=date.today(),
+    )
+    session.add(op)
+    session.commit()
+    session.refresh(op)
+    audit(session, user.username, "api_add_operation", f"id={op.id}")
+    return {"id": op.id, "status": op.status}
 
 
 @app.get("/api/report/{season}")
