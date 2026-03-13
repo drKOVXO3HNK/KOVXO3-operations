@@ -43,6 +43,18 @@ uvicorn app.main:app --reload
 - `agronom1 / agro123` (agronom)
 - `operator1 / op123` (operator)
 
+## Миграции (Alembic)
+
+```bash
+alembic upgrade head
+```
+
+## Тесты
+
+```bash
+pytest
+```
+
 ## Docker
 
 ```bash

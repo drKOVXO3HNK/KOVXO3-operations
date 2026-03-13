@@ -11,13 +11,12 @@ from passlib.context import CryptContext
 
 from .db import init_db, get_session
 from .models import FieldItem, CropItem, OperationItem, UserItem, AuditLogItem
+from .config import APP_TITLE, JWT_SECRET, JWT_EXPIRE_MIN
 
-app = FastAPI(title="KOVXO3 Operations")
+app = FastAPI(title=APP_TITLE)
 templates = Jinja2Templates(directory="app/templates")
 
-JWT_SECRET = "change-me-in-prod"
 JWT_ALG = "HS256"
-JWT_EXPIRE_MIN = 60 * 12
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # very simple in-memory rate limit for API token routes
