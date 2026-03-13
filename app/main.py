@@ -1,16 +1,27 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from io import BytesIO
-from fastapi import FastAPI, Depends, Form, Request, HTTPException, UploadFile, File, Header
+from collections import defaultdict, deque
+from fastapi import FastAPI, Depends, Form, Request, HTTPException, UploadFile, File, Header, Query
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 from openpyxl import Workbook, load_workbook
+from jose import jwt, JWTError
+from passlib.context import CryptContext
 
 from .db import init_db, get_session
 from .models import FieldItem, CropItem, OperationItem, UserItem, AuditLogItem
 
 app = FastAPI(title="KOVXO3 Operations")
 templates = Jinja2Templates(directory="app/templates")
+
+JWT_SECRET = "change-me-in-prod"
+JWT_ALG = "HS256"
+JWT_EXPIRE_MIN = 60 * 12
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# very simple in-memory rate limit for API token routes
+rate_bucket: dict[str, deque] = defaultdict(deque)
 
 
 def get_current_user(request: Request, session: Session) -> UserItem:
@@ -31,6 +42,42 @@ def get_user_by_token(session: Session, token: str | None):
     if not token:
         return None
     return session.exec(select(UserItem).where(UserItem.api_token == token)).first()
+
+
+def hash_password(raw: str) -> str:
+    return pwd_ctx.hash(raw)
+
+
+def verify_password(raw: str, stored: str) -> bool:
+    if stored.startswith("$2"):
+        return pwd_ctx.verify(raw, stored)
+    return raw == stored
+
+
+def create_jwt(username: str, role: str) -> str:
+    payload = {
+        "sub": username,
+        "role": role,
+        "exp": datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MIN),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def decode_jwt(token: str):
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except JWTError:
+        return None
+
+
+def enforce_rate_limit(key: str, limit: int = 60, window_sec: int = 60):
+    now = datetime.utcnow().timestamp()
+    q = rate_bucket[key]
+    while q and now - q[0] > window_sec:
+        q.popleft()
+    if len(q) >= limit:
+        raise HTTPException(status_code=429, detail="Too many requests")
+    q.append(now)
 
 
 def audit(session: Session, username: str, action: str, payload: str = ""):
@@ -55,8 +102,8 @@ def login_page(request: Request):
 
 @app.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...), session: Session = Depends(get_session)):
-    user = session.exec(select(UserItem).where(UserItem.username == username, UserItem.password == password)).first()
-    if not user:
+    user = session.exec(select(UserItem).where(UserItem.username == username)).first()
+    if not user or not verify_password(password, user.password):
         return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин/пароль"})
     resp = RedirectResponse(url="/dashboard", status_code=303)
     resp.set_cookie("user", username, httponly=True)
@@ -71,7 +118,15 @@ def logout():
 
 
 @app.get("/dashboard")
-def dashboard(request: Request, season: int | None = None, session: Session = Depends(get_session)):
+def dashboard(
+    request: Request,
+    season: int | None = None,
+    q: str = Query(default=""),
+    status: str = Query(default="all"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
     try:
         user = get_current_user(request, session)
     except Exception:
@@ -80,10 +135,31 @@ def dashboard(request: Request, season: int | None = None, session: Session = De
     season = season or date.today().year
     fields = session.exec(select(FieldItem)).all()
     crops = session.exec(select(CropItem)).all()
-    ops = session.exec(select(OperationItem).where(OperationItem.season == season)).all()
+    all_ops = session.exec(select(OperationItem).where(OperationItem.season == season)).all()
+
+    fields_map = {f.id: f for f in fields}
+    crops_map = {c.id: c for c in crops}
+
+    filtered_ops = []
+    ql = q.lower().strip()
+    for op in all_ops:
+        if status != "all" and op.status != status:
+            continue
+        if ql:
+            f_name = fields_map.get(op.field_id).name.lower() if op.field_id in fields_map else ""
+            c_name = crops_map.get(op.crop_id).name.lower() if op.crop_id in crops_map else ""
+            raw = f"{op.operation_type} {f_name} {c_name}".lower()
+            if ql not in raw:
+                continue
+        filtered_ops.append(op)
+
+    total_ops = len(filtered_ops)
+    start = (page - 1) * page_size
+    end = start + page_size
+    ops = filtered_ops[start:end]
 
     by_crop: dict[str, float] = {}
-    for op in ops:
+    for op in filtered_ops:
         c = next((x for x in crops if x.id == op.crop_id), None)
         key = c.name if c else "Не указана"
         by_crop[key] = by_crop.get(key, 0) + op.planned_area_ha
@@ -94,9 +170,9 @@ def dashboard(request: Request, season: int | None = None, session: Session = De
             "request": request,
             "season": season,
             "fields_count": len(fields),
-            "ops_count": len(ops),
-            "planned_sum": round(sum(x.planned_area_ha for x in ops), 2),
-            "completed_sum": round(sum(x.completed_area_ha for x in ops), 2),
+            "ops_count": total_ops,
+            "planned_sum": round(sum(x.planned_area_ha for x in filtered_ops), 2),
+            "completed_sum": round(sum(x.completed_area_ha for x in filtered_ops), 2),
             "by_crop": by_crop,
             "ops": ops,
             "fields": {f.id: f for f in fields},
@@ -104,6 +180,11 @@ def dashboard(request: Request, season: int | None = None, session: Session = De
             "user": user.username,
             "role": user.role,
             "can_edit": can_edit(user.role),
+            "q": q,
+            "status_filter": status,
+            "page": page,
+            "page_size": page_size,
+            "has_next": end < total_ops,
         },
     )
 
@@ -124,9 +205,9 @@ def seed_data(request: Request, session: Session = Depends(get_session)):
         session.add_all([CropItem(name="Пшеница яровая"), CropItem(name="Горох"), CropItem(name="Рапс яровой")])
     if not session.exec(select(UserItem)).first():
         session.add_all([
-            UserItem(username="oleg", password="oleg123", role="manager"),
-            UserItem(username="agronom1", password="agro123", role="agronom"),
-            UserItem(username="operator1", password="op123", role="operator"),
+            UserItem(username="oleg", password=hash_password("oleg123"), role="manager"),
+            UserItem(username="agronom1", password=hash_password("agro123"), role="agronom"),
+            UserItem(username="operator1", password=hash_password("op123"), role="operator"),
         ])
     session.commit()
     audit(session, user.username, "seed", "seed demo data")
@@ -349,6 +430,7 @@ def api_add_operation(
     x_api_token: str | None = Header(default=None),
     session: Session = Depends(get_session),
 ):
+    enforce_rate_limit(f"tok:{x_api_token}", limit=40, window_sec=60)
     user = get_user_by_token(session, x_api_token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid API token")
@@ -372,6 +454,14 @@ def api_add_operation(
     return {"id": op.id, "status": op.status}
 
 
+@app.post("/api/auth/token")
+def api_auth_token(username: str, password: str, session: Session = Depends(get_session)):
+    user = session.exec(select(UserItem).where(UserItem.username == username)).first()
+    if not user or not verify_password(password, user.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return {"access_token": create_jwt(user.username, user.role), "token_type": "bearer"}
+
+
 @app.get("/api/report/{season}")
 def report(request: Request, season: int, session: Session = Depends(get_session)):
     _ = get_current_user(request, session)
@@ -381,4 +471,24 @@ def report(request: Request, season: int, session: Session = Depends(get_session
         "operations": len(ops),
         "planned_area_ha": round(sum(x.planned_area_ha for x in ops), 2),
         "completed_area_ha": round(sum(x.completed_area_ha for x in ops), 2),
+    }
+
+
+@app.get("/api/v2/report/{season}")
+def report_jwt(season: int, authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1]
+    payload = decode_jwt(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    enforce_rate_limit(f"jwt:{payload.get('sub')}", limit=80, window_sec=60)
+    ops = session.exec(select(OperationItem).where(OperationItem.season == season)).all()
+    return {
+        "season": season,
+        "operations": len(ops),
+        "planned_area_ha": round(sum(x.planned_area_ha for x in ops), 2),
+        "completed_area_ha": round(sum(x.completed_area_ha for x in ops), 2),
+        "auth_user": payload.get("sub"),
     }
